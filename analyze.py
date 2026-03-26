@@ -24,8 +24,7 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-from pipeline.detector import detect_objects
-from pipeline.tracker import SimpleTracker
+from pipeline.detector import detect_and_track
 from pipeline.team import TeamClassifier
 from pipeline.pose import create_landmarker, estimate_pose
 from pipeline.court import CourtMapper
@@ -75,7 +74,6 @@ def process_chunk(
     width: int,
     height: int,
     yolo_model: YOLO,
-    tracker: SimpleTracker,
     team_clf: TeamClassifier,
     landmarker,
     court_mapper: CourtMapper,
@@ -109,23 +107,20 @@ def process_chunk(
             timestamp = abs_frame / fps
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-            # 1. Detect persons + balls
-            persons, balls = detect_objects(
+            # 1. Detect persons + balls (with built-in ByteTrack tracking)
+            persons, balls = detect_and_track(
                 frame, yolo_model, yolo_confidence, max_persons,
             )
 
-            # 2. Track
-            persons = tracker.update(persons)
-
-            # 3. Team classification
+            # 2. Team classification
             persons = team_clf.classify(frame, persons)
 
-            # 4. Court filtering
+            # 3. Court filtering
             for p in persons:
                 foot = court_mapper.foot_position(p["bbox"])
                 p["on_court"] = court_mapper.is_on_court(foot[0], foot[1])
 
-            # 5. Pose estimation (optional)
+            # 4. Pose estimation (optional)
             if not skip_pose and landmarker is not None:
                 for p in persons:
                     pose = estimate_pose(frame_rgb, p["bbox"], landmarker)
@@ -134,7 +129,7 @@ def process_chunk(
                 for p in persons:
                     p["pose"] = None
 
-            # 6. Build & export state
+            # 5. Build & export state
             state = build_frame_state(
                 frame_id=abs_frame,
                 timestamp_s=timestamp,
@@ -144,7 +139,7 @@ def process_chunk(
             )
             state_exporter.write(state)
 
-            # 7. Draw annotations
+            # 6. Draw annotations
             for p in persons:
                 draw_player(frame, p)
             for b in balls:
@@ -235,7 +230,6 @@ def run(
             print("Loading pose model...")
             landmarker = create_landmarker(str(MODEL_PATH))
 
-    tracker = SimpleTracker(iou_threshold=0.3, max_lost=15)
     team_clf = TeamClassifier(n_teams=n_teams)
     court_mapper = CourtMapper(calibration_path)
 
@@ -277,7 +271,6 @@ def run(
                     width=width,
                     height=height,
                     yolo_model=yolo_model,
-                    tracker=tracker,
                     team_clf=team_clf,
                     landmarker=landmarker,
                     court_mapper=court_mapper,
