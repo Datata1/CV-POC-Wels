@@ -1,0 +1,1 @@
+"""Handball match analysis pipeline."""

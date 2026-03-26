@@ -111,7 +111,7 @@ def estimate_pose_in_bbox(
     x2 = min(fw, x + w + pad_x)
     y2 = min(fh, y + h + pad_y)
 
-    crop = frame_rgb[y1:y2, x1:x2]
+    crop = np.ascontiguousarray(frame_rgb[y1:y2, x1:x2])
     if crop.size == 0:
         return None
 

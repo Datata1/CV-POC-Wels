@@ -1,14 +1,16 @@
 [project]
-name = "handball-pose-detection"
-version = "0.1.0"
-description = "POC: Bounding boxes and pose estimation for handball match videos using OpenCV and MediaPipe"
+name = "handball-match-analysis"
+version = "0.2.0"
+description = "POC: Handball match analysis — detection, tracking, team ID, pose, court mapping, state export"
 requires-python = ">=3.10"
 dependencies = [
     "opencv-python>=4.9.0",
     "mediapipe>=0.10.9",
     "numpy>=1.26.0",
     "ultralytics>=8.1.0",
+    "scikit-learn>=1.4.0",
 ]
 
 [project.scripts]
 detect = "detect:main"
+analyze = "analyze:main"
