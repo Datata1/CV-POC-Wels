@@ -1,9 +1,9 @@
 """
 Handball Match - Person Detection & Pose Estimation POC
 
-Detects people in a handball match video using YOLOv8, draws bounding boxes
-with confidence scores, and overlays joint/pose positions using MediaPipe
-PoseLandmarker (Tasks API).
+Detects people in a handball match video using YOLO11, draws bounding boxes
+with confidence scores, and overlays joint/pose positions using YOLO11-pose
+running on GPU for fast inference.
 
 Usage:
     1. Place your video file in the `input/` directory
@@ -15,19 +15,13 @@ import argparse
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import cv2
-import mediapipe as mp
 import numpy as np
 from ultralytics import YOLO
 
-BaseOptions = mp.tasks.BaseOptions
-PoseLandmarker = mp.tasks.vision.PoseLandmarker
-PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
-PoseLandmarksConnections = mp.tasks.vision.PoseLandmarksConnections
-RunningMode = mp.tasks.vision.RunningMode
+from pipeline.pose import create_pose_model, estimate_poses_batch, POSE_CONNECTIONS
 
 # Colors (BGR)
 BBOX_COLOR = (0, 255, 0)
@@ -40,9 +34,7 @@ SKELETON_COLOR = (0, 255, 255)
 
 INPUT_DIR = Path(__file__).parent / "input"
 OUTPUT_DIR = Path(__file__).parent / "output"
-MODEL_PATH = Path(__file__).parent / "models" / "pose_landmarker_heavy.task"
-
-POSE_CONNECTIONS = PoseLandmarksConnections.POSE_LANDMARKS
+DEFAULT_POSE_MODEL = "yolo11m-pose.pt"
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 
 
@@ -79,7 +71,7 @@ def detect_persons_yolo(
     frame: np.ndarray, model: YOLO, confidence: float = 0.3,
 ) -> list[tuple[int, int, int, int, float]]:
     """
-    Detect persons using YOLOv8.
+    Detect persons using YOLO11.
     Returns list of (x, y, w, h, conf) bounding boxes.
     """
     results = model(frame, classes=[0], conf=confidence, verbose=False)
@@ -92,62 +84,26 @@ def detect_persons_yolo(
     return boxes
 
 
-def estimate_pose_in_bbox(
-    frame_rgb: np.ndarray,
-    bbox: tuple[int, int, int, int],
-    landmarker: PoseLandmarker,
-) -> tuple | None:
-    """
-    Run MediaPipe PoseLandmarker on a cropped region and return landmarks
-    mapped back to the full frame coordinates.
-    """
-    x, y, w, h = bbox
-    fh, fw = frame_rgb.shape[:2]
-
-    # Add padding around the bounding box for better pose estimation
-    pad_x, pad_y = int(w * 0.15), int(h * 0.1)
-    x1 = max(0, x - pad_x)
-    y1 = max(0, y - pad_y)
-    x2 = min(fw, x + w + pad_x)
-    y2 = min(fh, y + h + pad_y)
-
-    crop = np.ascontiguousarray(frame_rgb[y1:y2, x1:x2])
-    if crop.size == 0:
-        return None
-
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=crop)
-    results = landmarker.detect(mp_image)
-
-    if not results.pose_landmarks:
-        return None
-
-    # Return first detected pose's landmarks + crop offset info
-    crop_h, crop_w = crop.shape[:2]
-    return results.pose_landmarks[0], (x1, y1, crop_w, crop_h)
-
-
 def draw_pose_on_frame(
     frame: np.ndarray,
-    landmarks: list,
-    offset: tuple[int, int, int, int],
+    landmarks: list[dict],
 ):
-    """Draw pose landmarks mapped back to full frame."""
-    x_off, y_off, crop_w, crop_h = offset
+    """Draw pose landmarks on the full frame."""
     h, w = frame.shape[:2]
 
     # Draw skeleton connections
-    for connection in POSE_CONNECTIONS:
-        start_lm = landmarks[connection.start]
-        end_lm = landmarks[connection.end]
+    for start_idx, end_idx in POSE_CONNECTIONS:
+        s = landmarks[start_idx]
+        e = landmarks[end_idx]
 
-        start_x = int(start_lm.x * crop_w + x_off)
-        start_y = int(start_lm.y * crop_h + y_off)
-        end_x = int(end_lm.x * crop_w + x_off)
-        end_y = int(end_lm.y * crop_h + y_off)
+        start_x = int(s["x"])
+        start_y = int(s["y"])
+        end_x = int(e["x"])
+        end_y = int(e["y"])
 
         if (
-            start_lm.visibility > 0.5
-            and end_lm.visibility > 0.5
+            s["visibility"] > 0.5
+            and e["visibility"] > 0.5
             and 0 <= start_x < w
             and 0 <= start_y < h
             and 0 <= end_x < w
@@ -157,22 +113,27 @@ def draw_pose_on_frame(
 
     # Draw joint points
     for lm in landmarks:
-        px = int(lm.x * crop_w + x_off)
-        py = int(lm.y * crop_h + y_off)
-        if lm.visibility > 0.5 and 0 <= px < w and 0 <= py < h:
+        px = int(lm["x"])
+        py = int(lm["y"])
+        if lm["visibility"] > 0.5 and 0 <= px < w and 0 <= py < h:
             cv2.circle(frame, (px, py), 4, JOINT_COLOR, -1)
 
 
 def process_frame(
     frame: np.ndarray,
     yolo_model: YOLO,
-    landmarker: PoseLandmarker,
+    pose_model: YOLO,
     max_persons: int,
     yolo_confidence: float,
 ) -> np.ndarray:
     """Detect persons and estimate pose for a single frame. Returns annotated frame."""
     boxes = detect_persons_yolo(frame, yolo_model, yolo_confidence)
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    bboxes_xyxy = []
+    for x, y, w, h, conf in boxes[:max_persons]:
+        bboxes_xyxy.append((x, y, x + w, y + h))
+
+    poses = estimate_poses_batch(frame, bboxes_xyxy, pose_model)
 
     for i, (x, y, w, h, conf) in enumerate(boxes[:max_persons]):
         # Draw bounding box
@@ -188,10 +149,8 @@ def process_frame(
         )
 
         # Pose estimation per detected person
-        result = estimate_pose_in_bbox(frame_rgb, (x, y, w, h), landmarker)
-        if result is not None:
-            pose_landmarks, offset = result
-            draw_pose_on_frame(frame, pose_landmarks, offset)
+        if poses[i] is not None:
+            draw_pose_on_frame(frame, poses[i]["landmarks"])
 
     return frame
 
@@ -207,7 +166,7 @@ def process_chunk(
     width: int,
     height: int,
     yolo_model: YOLO,
-    landmarker: PoseLandmarker,
+    pose_model: YOLO,
     show_preview: bool = False,
     max_persons: int = 20,
     yolo_confidence: float = 0.3,
@@ -235,7 +194,7 @@ def process_chunk(
             if not ret:
                 break
 
-            frame = process_frame(frame, yolo_model, landmarker, max_persons, yolo_confidence)
+            frame = process_frame(frame, yolo_model, pose_model, max_persons, yolo_confidence)
             out.write(frame)
             frames_written += 1
 
@@ -273,14 +232,10 @@ def process_video(
     max_persons: int = 20,
     chunk_seconds: int = 60,
     yolo_confidence: float = 0.3,
-    yolo_model_size: str = "yolov8n.pt",
+    yolo_model_size: str = "yolo11n.pt",
+    pose_model_size: str = "yolo11m-pose.pt",
 ):
     """Split video into chunks by duration and process each sequentially."""
-    if not MODEL_PATH.exists():
-        print(f"Error: Pose model not found at '{MODEL_PATH}'")
-        print("Download it with:  make download-model")
-        sys.exit(1)
-
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         print(f"Error: Cannot open video '{video_path}'")
@@ -304,19 +259,13 @@ def process_video(
     print(f"Output dir: {output_dir}")
     print()
 
-    # Initialize YOLOv8 person detector
-    print("Loading YOLO model...")
+    # Initialize YOLO11 person detector
+    print("Loading YOLO detection model...")
     yolo_model = YOLO(yolo_model_size)
 
-    # Initialize MediaPipe PoseLandmarker
-    options = PoseLandmarkerOptions(
-        base_options=BaseOptions(model_asset_path=str(MODEL_PATH)),
-        running_mode=RunningMode.IMAGE,
-        num_poses=1,
-        min_pose_detection_confidence=0.5,
-        min_pose_presence_confidence=0.5,
-    )
-    landmarker = PoseLandmarker.create_from_options(options)
+    # Initialize YOLO11-pose model (GPU-accelerated)
+    print("Loading YOLO11-pose model (GPU)...")
+    pose_model = create_pose_model(pose_model_size)
 
     chunk_paths = []
     total_processed = 0
@@ -343,7 +292,7 @@ def process_video(
                 width=width,
                 height=height,
                 yolo_model=yolo_model,
-                landmarker=landmarker,
+                pose_model=pose_model,
                 show_preview=show_preview,
                 max_persons=max_persons,
                 yolo_confidence=yolo_confidence,
@@ -355,7 +304,6 @@ def process_video(
             print(f"  >>> You can watch this chunk now while the rest processes.")
 
     finally:
-        landmarker.close()
         if show_preview:
             cv2.destroyAllWindows()
 
@@ -408,9 +356,16 @@ def main():
     parser.add_argument(
         "--yolo-model",
         type=str,
-        default="yolov8n.pt",
-        choices=["yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "yolov8l.pt", "yolov8x.pt"],
+        default="yolo11n.pt",
+        choices=["yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt"],
         help="YOLO model size: n=nano(fast), s=small, m=medium, l=large, x=xlarge(accurate)",
+    )
+    parser.add_argument(
+        "--pose-model",
+        type=str,
+        default="yolo11m-pose.pt",
+        choices=["yolo11n-pose.pt", "yolo11s-pose.pt", "yolo11m-pose.pt", "yolo11l-pose.pt", "yolo11x-pose.pt"],
+        help="YOLO11-pose model size (default: yolo11m-pose.pt, runs on GPU)",
     )
     args = parser.parse_args()
 
@@ -438,6 +393,7 @@ def main():
         chunk_seconds=args.chunk_seconds,
         yolo_confidence=args.confidence,
         yolo_model_size=args.yolo_model,
+        pose_model_size=args.pose_model,
     )
 
 

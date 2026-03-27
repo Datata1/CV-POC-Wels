@@ -32,50 +32,165 @@ uv run python analyze.py --calibration court_cal.json
 
 ---
 
-## 2. Ball Detection — Labeling Data for Fine-Tuning YOLO
+## 2. Ball Detection — Labeling & Fine-Tuning YOLO11
 
-The pipeline currently uses YOLO's built-in `sports ball` class (COCO class 32),
-which works for some scenarios but is not trained specifically on handballs.
-For better accuracy, fine-tune YOLOv8 on your own data.
+The pipeline currently uses YOLO's generic `sports ball` class (COCO class 32),
+which often misses handballs — they're small, fast, skin-colored, and frequently
+occluded by hands. Fine-tuning on your own data makes a **huge** difference.
 
-### Step 1: Extract frames
+### Overview
+
+```
+Extract frames → Label in Roboflow → Export YOLO format → Train → Plug into pipeline
+```
+
+### Step 1: Extract frames from your match videos
 
 ```bash
-# Extract every 10th frame as a JPEG
-mkdir -p annotation/ball/images
+# Every 10th frame (adjust for more/less data)
+mkdir -p annotation/ball/raw_images
 ffmpeg -i input/match.mp4 -vf "select=not(mod(n\,10))" -vsync vfr \
-    annotation/ball/images/frame_%05d.jpg
+    annotation/ball/raw_images/frame_%05d.jpg
 ```
 
-### Step 2: Label with CVAT or Roboflow
+> **Tip:** Extract from multiple matches/camera angles for a more robust model.
+> Aim for **1000–2000 frames** total, of which ~60-70% will contain a visible ball.
 
-**Option A — Roboflow (recommended, free tier available):**
-1. Go to [app.roboflow.com](https://app.roboflow.com) and create a project
+### Step 2: Label with Roboflow (recommended)
+
+1. Go to [app.roboflow.com](https://app.roboflow.com) → Create Project
+   - Project type: **Object Detection**
+   - Name: e.g. `handball-ball`
 2. Upload the extracted frames
-3. Label each ball with a bounding box (class: `handball`)
-4. Export in **YOLOv8 format** (you'll get a `data.yaml` + `labels/` directory)
+3. Label each visible ball with a **tight bounding box**
+   - Class name: `handball`
+   - Use the **single class** — don't create multiple ball classes
+4. Labeling guidelines:
+   - **Label every visible ball**, even if partially occluded by a hand
+   - **Skip frames** where the ball is completely invisible
+   - **Tight boxes** — the box should be as close to the ball edge as possible
+   - Ball in flight, ball in hand, ball on ground — label all of them
+   - When in doubt whether something is the ball → label it (false positives are easier to fix than missing data)
+5. Use Roboflow's **Smart Polygon / AI-assist** to speed up labeling
+6. Apply a **70/20/10 train/valid/test split** in Roboflow
+7. Enable augmentations in Roboflow:
+   - Flip horizontal ✅
+   - Rotation ±15° ✅
+   - Brightness ±25% ✅
+   - Blur up to 2.5px ✅
+   - Mosaic ✅ (very effective for small objects)
+8. **Export** → Format: **YOLOv8** (compatible with YOLO11) → Download zip
 
-**Option B — CVAT (self-hosted):**
+**Alternative: CVAT (self-hosted)**
 1. Go to [app.cvat.ai](https://app.cvat.ai) or run CVAT locally
-2. Create a task, upload frames
-3. Draw bounding boxes around every visible ball, label as `handball`
-4. Export as **YOLO 1.1**
+2. Create a task, upload frames, label as `handball`
+3. Export as **YOLO 1.1** format
+4. Create `data.yaml` manually (see below)
 
-### Step 3: Labeling tips
-- Label even partially occluded balls (held by a player)
-- Skip frames where the ball is fully invisible
-- Aim for **500–1000+ labeled frames** for decent results
-- Use data augmentation (Roboflow does this automatically)
+### Step 3: Prepare the dataset structure
 
-### Step 4: Train
+After export, your folder should look like this:
+
+```
+annotation/ball/
+├── data.yaml          ← class names + paths
+├── train/
+│   ├── images/        ← training JPEGs
+│   └── labels/        ← one .txt per image (YOLO format)
+├── valid/
+│   ├── images/
+│   └── labels/
+└── test/
+    ├── images/
+    └── labels/
+```
+
+The `data.yaml` should contain:
+```yaml
+train: annotation/ball/train/images
+val: annotation/ball/valid/images
+test: annotation/ball/test/images
+
+nc: 1
+names: ['handball']
+```
+
+> Roboflow generates this automatically. If using CVAT, create it manually.
+
+### Step 4: Train on GPU
 
 ```bash
-# After exporting data to annotation/ball/
-yolo detect train data=annotation/ball/data.yaml model=yolov8n.pt epochs=50 imgsz=640
+# Fine-tune YOLO11n on your labeled handball data (fast, good for small objects)
+yolo detect train \
+    data=annotation/ball/data.yaml \
+    model=yolo11n.pt \
+    epochs=100 \
+    imgsz=640 \
+    batch=16 \
+    device=0 \
+    name=handball_ball
+
+# For higher accuracy (slower training):
+yolo detect train \
+    data=annotation/ball/data.yaml \
+    model=yolo11s.pt \
+    epochs=100 \
+    imgsz=640 \
+    batch=16 \
+    device=0 \
+    name=handball_ball_s
 ```
 
-The trained model will be at `runs/detect/train/weights/best.pt`.
-Place it in `models/ball_yolov8.pt` and update the detector to use it.
+**Training tips:**
+- Start with `yolo11n.pt` — nano is fast to iterate and good for single-class detection
+- Use `imgsz=640` (default) or `imgsz=1280` if the ball is very small in your footage
+- With ~1000 labeled frames, 100 epochs is a good starting point
+- Watch `val/mAP50` — it should plateau around epoch 60–80
+- The best model is saved automatically: `runs/detect/handball_ball/weights/best.pt`
+
+### Step 5: Validate the trained model
+
+```bash
+# Run validation on the test set
+yolo detect val \
+    data=annotation/ball/data.yaml \
+    model=runs/detect/handball_ball/weights/best.pt \
+    device=0
+
+# Visual check: run inference on a few frames
+yolo detect predict \
+    model=runs/detect/handball_ball/weights/best.pt \
+    source=annotation/ball/test/images \
+    device=0 \
+    save=True
+```
+
+Check `runs/detect/predict/` for visual results. You want:
+- **mAP50 > 0.7** for a usable model
+- **mAP50 > 0.85** for a solid model
+- Few false positives (hands/feet detected as ball)
+
+### Step 6: Plug into the pipeline
+
+```bash
+# Copy trained model
+cp runs/detect/handball_ball/weights/best.pt models/handball_ball.pt
+
+# Run with custom ball model
+uv run python analyze.py --ball-model models/handball_ball.pt
+```
+
+> **Note:** The `--ball-model` flag requires a pipeline update (see below).
+> Until then, you can replace the detection model manually in `pipeline/detector.py`.
+
+### How many labels do I need?
+
+| Labels | Expected quality |
+|--------|------------------|
+| 200    | Barely usable — lots of missed detections |
+| 500    | Decent — catches most balls in clear view |
+| 1000   | Good — works in most game situations |
+| 2000+  | Excellent — robust to occlusion, blur, lighting |
 
 ---
 
@@ -215,7 +330,7 @@ print(f"Loaded {len(df)} frames")
 | Task                    | Command                                              |
 |------------------------|------------------------------------------------------|
 | Install dependencies   | `make install`                                       |
-| Download pose model    | `make download-model`                                |
+| Download pose model    | `make download-pose-model`                           |
 | Calibrate court        | `make calibrate`                                     |
 | Run full pipeline      | `make analyze`                                       |
 | Run without pose       | `make analyze-fast`                                  |

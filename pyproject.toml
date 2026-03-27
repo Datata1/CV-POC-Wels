@@ -1,14 +1,15 @@
 [project]
 name = "handball-match-analysis"
-version = "0.2.0"
-description = "POC: Handball match analysis — detection, tracking, team ID, pose, court mapping, state export"
+version = "0.3.0"
+description = "POC: Handball match analysis — detection, tracking, team ID, pose (GPU), court mapping, state export"
 requires-python = ">=3.10"
 dependencies = [
     "opencv-python>=4.9.0",
-    "mediapipe>=0.10.9",
     "numpy>=1.26.0",
     "ultralytics>=8.1.0",
     "scikit-learn>=1.4.0",
+    "torch>=2.1.0",
+    "torchvision>=0.16.0",
 ]
 
 [project.scripts]

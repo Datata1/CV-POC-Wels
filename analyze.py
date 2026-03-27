@@ -21,19 +21,18 @@ import sys
 from pathlib import Path
 
 import cv2
-import numpy as np
 from ultralytics import YOLO
 
 from pipeline.detector import detect_and_track
 from pipeline.team import TeamClassifier
-from pipeline.pose import create_landmarker, estimate_pose
+from pipeline.pose import create_pose_model, estimate_poses_batch
 from pipeline.court import CourtMapper
 from pipeline.state import build_frame_state, StateExporter
 from pipeline.draw import draw_player, draw_ball, draw_hud
 
 INPUT_DIR = Path(__file__).parent / "input"
 OUTPUT_DIR = Path(__file__).parent / "output"
-MODEL_PATH = Path(__file__).parent / "models" / "pose_landmarker_heavy.task"
+DEFAULT_POSE_MODEL = "yolo11m-pose.pt"
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 
 
@@ -75,13 +74,15 @@ def process_chunk(
     height: int,
     yolo_model: YOLO,
     team_clf: TeamClassifier,
-    landmarker,
+    pose_model,
     court_mapper: CourtMapper,
     state_exporter: StateExporter,
     show_preview: bool = False,
     max_persons: int = 20,
     yolo_confidence: float = 0.3,
     skip_pose: bool = False,
+    ball_model: YOLO | None = None,
+    ball_confidence: float = 0.25,
 ) -> int:
     cap = cv2.VideoCapture(str(video_path))
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
@@ -105,11 +106,11 @@ def process_chunk(
 
             abs_frame = start_frame + i
             timestamp = abs_frame / fps
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             # 1. Detect persons + balls (with built-in ByteTrack tracking)
             persons, balls = detect_and_track(
                 frame, yolo_model, yolo_confidence, max_persons,
+                ball_model=ball_model, ball_confidence=ball_confidence,
             )
 
             # 2. Team classification
@@ -120,10 +121,11 @@ def process_chunk(
                 foot = court_mapper.foot_position(p["bbox"])
                 p["on_court"] = court_mapper.is_on_court(foot[0], foot[1])
 
-            # 4. Pose estimation (optional)
-            if not skip_pose and landmarker is not None:
-                for p in persons:
-                    pose = estimate_pose(frame_rgb, p["bbox"], landmarker)
+            # 4. Pose estimation (optional, GPU-accelerated)
+            if not skip_pose and pose_model is not None:
+                bboxes = [p["bbox"] for p in persons]
+                poses = estimate_poses_batch(frame, bboxes, pose_model)
+                for p, pose in zip(persons, poses):
                     p["pose"] = pose
             else:
                 for p in persons:
@@ -182,10 +184,13 @@ def run(
     max_persons: int = 20,
     chunk_seconds: int = 60,
     yolo_confidence: float = 0.3,
-    yolo_model_size: str = "yolov8n.pt",
+    yolo_model_size: str = "yolo11n.pt",
     skip_pose: bool = False,
+    pose_model_size: str = "yolo11m-pose.pt",
     calibration_path: Path | None = None,
     n_teams: int = 2,
+    ball_model_path: Path | None = None,
+    ball_confidence: float = 0.25,
 ):
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -209,7 +214,8 @@ def run(
     print(f"Resolution:  {width}x{height} | FPS: {fps:.1f} | Duration: {total_duration:.0f}s")
     print(f"Chunks:      {total_chunks} x ~{chunk_seconds}s")
     print(f"YOLO model:  {yolo_model_size} | Confidence: {yolo_confidence}")
-    print(f"Pose:        {'OFF' if skip_pose else 'ON'}")
+    print(f"Pose:        {'OFF' if skip_pose else pose_model_size + ' (GPU)'}")
+    print(f"Ball model:  {ball_model_path or 'COCO generic (use --ball-model for fine-tuned)'}")
     print(f"Court cal:   {calibration_path or 'none (set with --calibration)'}")
     print(f"Teams:       {n_teams}")
     print(f"ffmpeg:      {'yes' if HAS_FFMPEG else 'no'}")
@@ -217,18 +223,20 @@ def run(
     print()
 
     # --- Initialize components ---
-    print("Loading YOLO model...")
+    print("Loading YOLO detection model...")
     yolo_model = YOLO(yolo_model_size)
 
-    landmarker = None
+    ball_model = None
+    if ball_model_path and ball_model_path.exists():
+        print(f"Loading custom ball model: {ball_model_path.name}")
+        ball_model = YOLO(str(ball_model_path))
+    elif ball_model_path:
+        print(f"Warning: Ball model not found at '{ball_model_path}', using COCO generic.")
+
+    pose_model = None
     if not skip_pose:
-        if not MODEL_PATH.exists():
-            print(f"Warning: Pose model not found at '{MODEL_PATH}', skipping pose.")
-            print("Download with:  make download-model")
-            skip_pose = True
-        else:
-            print("Loading pose model...")
-            landmarker = create_landmarker(str(MODEL_PATH))
+        print("Loading YOLO11-pose model (GPU)...")
+        pose_model = create_pose_model(pose_model_size)
 
     team_clf = TeamClassifier(n_teams=n_teams)
     court_mapper = CourtMapper(calibration_path)
@@ -272,13 +280,15 @@ def run(
                     height=height,
                     yolo_model=yolo_model,
                     team_clf=team_clf,
-                    landmarker=landmarker,
+                    pose_model=pose_model,
                     court_mapper=court_mapper,
                     state_exporter=exporter,
                     show_preview=show_preview,
                     max_persons=max_persons,
                     yolo_confidence=yolo_confidence,
                     skip_pose=skip_pose,
+                    ball_model=ball_model,
+                    ball_confidence=ball_confidence,
                 )
 
                 total_processed += written
@@ -286,8 +296,6 @@ def run(
                 print(f"\n  Saved: {chunk_path.name}")
 
         finally:
-            if landmarker is not None:
-                landmarker.close()
             if show_preview:
                 cv2.destroyAllWindows()
 
@@ -310,12 +318,17 @@ def main():
     parser.add_argument("--chunk-seconds", type=int, default=60)
     parser.add_argument("--confidence", type=float, default=0.3)
     parser.add_argument(
-        "--yolo-model", type=str, default="yolov8n.pt",
-        choices=["yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "yolov8l.pt", "yolov8x.pt"],
+        "--yolo-model", type=str, default="yolo11n.pt",
+        choices=["yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt"],
     )
     parser.add_argument(
         "--no-pose", action="store_true",
         help="Skip pose estimation (much faster)",
+    )
+    parser.add_argument(
+        "--pose-model", type=str, default="yolo11m-pose.pt",
+        choices=["yolo11n-pose.pt", "yolo11s-pose.pt", "yolo11m-pose.pt", "yolo11l-pose.pt", "yolo11x-pose.pt"],
+        help="YOLO11-pose model size (default: yolo11m-pose.pt, runs on GPU)",
     )
     parser.add_argument(
         "--calibration", type=str, default=None,
@@ -324,6 +337,14 @@ def main():
     parser.add_argument(
         "--n-teams", type=int, default=2,
         help="Number of teams to cluster (default: 2)",
+    )
+    parser.add_argument(
+        "--ball-model", type=str, default=None,
+        help="Path to fine-tuned ball detection model (e.g. models/handball_ball.pt)",
+    )
+    parser.add_argument(
+        "--ball-confidence", type=float, default=0.25,
+        help="Ball detection confidence threshold (default: 0.25)",
     )
     args = parser.parse_args()
 
@@ -341,6 +362,7 @@ def main():
     output_dir.mkdir(exist_ok=True)
 
     cal_path = Path(args.calibration) if args.calibration else None
+    ball_path = Path(args.ball_model) if args.ball_model else None
 
     run(
         video_path=video_path,
@@ -352,8 +374,11 @@ def main():
         yolo_confidence=args.confidence,
         yolo_model_size=args.yolo_model,
         skip_pose=args.no_pose,
+        pose_model_size=args.pose_model,
         calibration_path=cal_path,
         n_teams=args.n_teams,
+        ball_model_path=ball_path,
+        ball_confidence=args.ball_confidence,
     )
 
 

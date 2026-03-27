@@ -3,9 +3,7 @@
 import cv2
 import numpy as np
 
-import mediapipe as mp
-PoseLandmarksConnections = mp.tasks.vision.PoseLandmarksConnections
-POSE_CONNECTIONS = PoseLandmarksConnections.POSE_LANDMARKS
+from pipeline.pose import POSE_CONNECTIONS
 
 # Team colors (BGR)
 TEAM_COLORS = {
@@ -42,7 +40,7 @@ def draw_player(frame: np.ndarray, det: dict):
 
     # Pose skeleton
     pose = det.get("pose")
-    if pose and "raw" in pose:
+    if pose:
         _draw_pose(frame, pose["landmarks"], pose["offset"])
 
 
@@ -50,9 +48,9 @@ def _draw_pose(frame: np.ndarray, landmarks: list[dict], offset: tuple):
     """Draw skeleton connections and joint dots."""
     h, w = frame.shape[:2]
 
-    for connection in POSE_CONNECTIONS:
-        s = landmarks[connection.start]
-        e = landmarks[connection.end]
+    for start_idx, end_idx in POSE_CONNECTIONS:
+        s = landmarks[start_idx]
+        e = landmarks[end_idx]
         sx, sy = int(s["x"]), int(s["y"])
         ex, ey = int(e["x"]), int(e["y"])
 
