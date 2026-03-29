@@ -1,4 +1,6 @@
 input/
+annotation/
+runs/
 !input/.gitkeep
 output/
 !output/.gitkeep
@@ -7,3 +9,4 @@ __pycache__/
 *.pyc
 .venv/
 *.pt
+*.zip

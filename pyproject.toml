@@ -10,6 +10,7 @@ dependencies = [
     "scikit-learn>=1.4.0",
     "torch>=2.1.0",
     "torchvision>=0.16.0",
+    "yt-dlp>=2026.3.17",
 ]
 
 [project.scripts]

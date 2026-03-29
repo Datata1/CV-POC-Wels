@@ -4,7 +4,7 @@ CHUNK_SECONDS ?= 60
 BALL_EPOCHS ?= 100
 BALL_IMGSZ ?= 640
 BALL_BATCH ?= 16
-BALL_BASE_MODEL ?= yolo11n.pt
+BALL_BASE_MODEL ?= yolo11m.pt
 BALL_DATA ?= annotation/ball/data.yaml
 BALL_NAME ?= handball_ball
 BALL_MODEL ?= runs/detect/$(BALL_NAME)/weights/best.pt
@@ -49,7 +49,7 @@ calibrate: ## Open calibration tool to mark court corners
 extract-frames: ## Extract every 10th frame from input video for labeling
 	mkdir -p annotation/ball/raw_images
 	ffmpeg -i $$(ls input/*.mp4 input/*.avi input/*.mov 2>/dev/null | head -1) \
-		-vf "select=not(mod(n\,10))" -vsync vfr annotation/ball/raw_images/frame_%05d.jpg
+		-vf "select=not(mod(n\,150))" -vsync vfr annotation/ball/raw_images/frame_%05d.jpg
 	@echo "Frames extracted to annotation/ball/raw_images/"
 	@echo "Upload to Roboflow, label, export as YOLOv8 format into annotation/ball/"
 
@@ -84,7 +84,11 @@ install-ball: ## Copy trained ball model to models/ for use in pipeline
 	@echo "Run: make analyze-ball"
 
 analyze-ball: ## Full pipeline with fine-tuned ball model
-	uv run python analyze.py --chunk-seconds $(CHUNK_SECONDS) --ball-model models/handball_ball.pt
+	uv run python analyze.py --chunk-seconds $(CHUNK_SECONDS) --ball-model models/handball_ball.pt --confidence 0.10
+
+download-video: ## Download sample handball video for testing
+	mkdir -p input
+	yt-dlp -S "vcodec:h264" --merge-output-format mp4 --cookies-from-browser chrome -o "input/video2.%(ext)s" "https://www.youtube.com/watch?v=5PDVclN7lY0"
 
 clean: ## Remove all generated output videos and state files
 	rm -f output/*.mp4 output/*.jsonl
