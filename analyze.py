@@ -30,7 +30,7 @@ from pipeline.pose import create_pose_model, estimate_poses_batch
 from pipeline.court import CourtMapper
 from pipeline.state import build_frame_state, StateExporter
 from pipeline.draw import draw_player, draw_ball, draw_hud
-from pipeline.lines import estimate_homography_from_lines, draw_debug_lines
+from pipeline.lines import estimate_homography, HomographyTracker
 from pipeline.court_viz import render_court, CANVAS_W, CANVAS_H
 
 INPUT_DIR = Path(__file__).parent / "input"
@@ -118,7 +118,7 @@ def process_chunk(
                 cv2.VideoWriter_fourcc(*"mp4v"), fps, (CANVAS_W, CANVAS_H),
             )
 
-    line_H = None  # Homography from line detection
+    h_tracker = HomographyTracker(max_stale_frames=int(fps * 5))
     chunk_total = end_frame - start_frame
     frames_written = 0
 
@@ -140,26 +140,23 @@ def process_chunk(
             # 2. Team classification
             persons = team_clf.classify(frame, persons)
 
-            # 2b. Line detection → homography (if enabled and no manual calibration)
+            # 2b. Court homography (if enabled and no manual calibration)
             if enable_lines and not court_mapper.is_calibrated:
-                new_H, line_debug = estimate_homography_from_lines(frame)
-                if new_H is not None:
-                    line_H = new_H
-                draw_debug_lines(frame, line_debug)
+                raw_H, _ = estimate_homography(frame)
+                h_tracker.update(frame, raw_H)
 
             # 3. Court filtering (use manual calibration or line-based H)
             active_H = None
             if court_mapper.is_calibrated:
                 active_H = court_mapper._H
-            elif line_H is not None:
-                active_H = line_H
+            elif h_tracker.current_H is not None:
+                active_H = h_tracker.current_H
 
             for p in persons:
                 foot = court_mapper.foot_position(p["bbox"])
                 if active_H is not None and not court_mapper.is_calibrated:
-                    # Use line-based homography
                     pt = cv2.perspectiveTransform(
-                        np.float32([[[foot[0], foot[1]]]]), line_H,
+                        np.float32([[[foot[0], foot[1]]]]), active_H,
                     )
                     cx, cy = float(pt[0][0][0]), float(pt[0][0][1])
                     p["court_pos_line"] = (cx, cy)
@@ -198,7 +195,7 @@ def process_chunk(
                 if balls and state["ball"]:
                     bx, by = state["ball"]["center_px"]
                     bpt = cv2.perspectiveTransform(
-                        np.float32([[[bx, by]]]), line_H,
+                        np.float32([[[bx, by]]]), active_H,
                     )
                     state["ball"]["court_pos"] = [
                         round(float(bpt[0][0][0]), 2),
