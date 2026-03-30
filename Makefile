@@ -1,4 +1,4 @@
-.PHONY: help install download-pose-model run preview clean analyze analyze-fast analyze-preview calibrate extract-frames train-ball validate-ball analyze-ball
+.PHONY: help install download-pose-model run preview clean analyze analyze-fast analyze-preview calibrate extract-frames train-ball validate-ball analyze-ball analyze-lines analyze-ball-lines
 
 CHUNK_SECONDS ?= 60
 BALL_EPOCHS ?= 100
@@ -85,6 +85,14 @@ install-ball: ## Copy trained ball model to models/ for use in pipeline
 
 analyze-ball: ## Full pipeline with fine-tuned ball model
 	uv run python analyze.py --chunk-seconds $(CHUNK_SECONDS) --ball-model models/handball_ball.pt --confidence 0.10
+
+# ── Court line detection (POC) ────────────────────────────
+
+analyze-lines: ## Pipeline with automatic line detection + court top-down view
+	uv run python analyze.py --chunk-seconds $(CHUNK_SECONDS) --no-pose --lines
+
+analyze-ball-lines: ## Pipeline with ball model + line detection + court view
+	uv run python analyze.py --chunk-seconds $(CHUNK_SECONDS) --ball-model models/handball_ball.pt --confidence 0.10 --no-pose --lines
 
 download-video: ## Download sample handball video for testing
 	mkdir -p input

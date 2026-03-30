@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 import cv2
+import numpy as np
 from ultralytics import YOLO
 
 from pipeline.detector import detect_and_track
@@ -29,6 +30,8 @@ from pipeline.pose import create_pose_model, estimate_poses_batch
 from pipeline.court import CourtMapper
 from pipeline.state import build_frame_state, StateExporter
 from pipeline.draw import draw_player, draw_ball, draw_hud
+from pipeline.lines import estimate_homography_from_lines, draw_debug_lines
+from pipeline.court_viz import render_court, CANVAS_W, CANVAS_H
 
 INPUT_DIR = Path(__file__).parent / "input"
 OUTPUT_DIR = Path(__file__).parent / "output"
@@ -83,6 +86,8 @@ def process_chunk(
     skip_pose: bool = False,
     ball_model: YOLO | None = None,
     ball_confidence: float = 0.25,
+    enable_lines: bool = False,
+    court_video_path: Path | None = None,
 ) -> int:
     cap = cv2.VideoCapture(str(video_path))
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
@@ -95,6 +100,25 @@ def process_chunk(
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 
     out = cv2.VideoWriter(str(raw_path), fourcc, fps, (width, height))
+
+    # Court top-down video writer
+    court_out = None
+    court_raw_path = None
+    if court_video_path:
+        if HAS_FFMPEG:
+            court_raw_path = court_video_path.with_suffix(".raw.avi")
+            court_out = cv2.VideoWriter(
+                str(court_raw_path),
+                cv2.VideoWriter_fourcc(*"MJPG"), fps, (CANVAS_W, CANVAS_H),
+            )
+        else:
+            court_raw_path = court_video_path
+            court_out = cv2.VideoWriter(
+                str(court_video_path),
+                cv2.VideoWriter_fourcc(*"mp4v"), fps, (CANVAS_W, CANVAS_H),
+            )
+
+    line_H = None  # Homography from line detection
     chunk_total = end_frame - start_frame
     frames_written = 0
 
@@ -116,10 +140,34 @@ def process_chunk(
             # 2. Team classification
             persons = team_clf.classify(frame, persons)
 
-            # 3. Court filtering
+            # 2b. Line detection → homography (if enabled and no manual calibration)
+            if enable_lines and not court_mapper.is_calibrated:
+                new_H, line_debug = estimate_homography_from_lines(frame)
+                if new_H is not None:
+                    line_H = new_H
+                draw_debug_lines(frame, line_debug)
+
+            # 3. Court filtering (use manual calibration or line-based H)
+            active_H = None
+            if court_mapper.is_calibrated:
+                active_H = court_mapper._H
+            elif line_H is not None:
+                active_H = line_H
+
             for p in persons:
                 foot = court_mapper.foot_position(p["bbox"])
-                p["on_court"] = court_mapper.is_on_court(foot[0], foot[1])
+                if active_H is not None and not court_mapper.is_calibrated:
+                    # Use line-based homography
+                    pt = cv2.perspectiveTransform(
+                        np.float32([[[foot[0], foot[1]]]]), line_H,
+                    )
+                    cx, cy = float(pt[0][0][0]), float(pt[0][0][1])
+                    p["court_pos_line"] = (cx, cy)
+                    p["on_court"] = (
+                        -3 <= cx <= 43 and -3 <= cy <= 23
+                    )
+                else:
+                    p["on_court"] = court_mapper.is_on_court(foot[0], foot[1])
 
             # 4. Pose estimation (optional, GPU-accelerated)
             if not skip_pose and pose_model is not None:
@@ -139,7 +187,35 @@ def process_chunk(
                 balls=balls,
                 court_mapper=court_mapper,
             )
+
+            # Inject line-based court positions into state if available
+            if active_H is not None and not court_mapper.is_calibrated:
+                for ps, p in zip(state["players"], persons):
+                    if "court_pos_line" in p:
+                        cx, cy = p["court_pos_line"]
+                        ps["court_pos"] = [round(cx, 2), round(cy, 2)]
+                # Ball position via line homography
+                if balls and state["ball"]:
+                    bx, by = state["ball"]["center_px"]
+                    bpt = cv2.perspectiveTransform(
+                        np.float32([[[bx, by]]]), line_H,
+                    )
+                    state["ball"]["court_pos"] = [
+                        round(float(bpt[0][0][0]), 2),
+                        round(float(bpt[0][0][1]), 2),
+                    ]
+
             state_exporter.write(state)
+
+            # 5b. Render court top-down view
+            if court_out is not None:
+                court_frame = render_court(
+                    players=state["players"],
+                    ball=state.get("ball"),
+                    frame_id=abs_frame,
+                    timestamp_s=timestamp,
+                )
+                court_out.write(court_frame)
 
             # 6. Draw annotations
             for p in persons:
@@ -168,10 +244,16 @@ def process_chunk(
     finally:
         cap.release()
         out.release()
+        if court_out is not None:
+            court_out.release()
 
     if HAS_FFMPEG and raw_path != output_path:
         print(f"\n  Remuxing to H.264...", end="")
         remux_to_h264(raw_path, output_path)
+
+    if court_out is not None and HAS_FFMPEG and court_raw_path != court_video_path:
+        print(f"\n  Remuxing court video...", end="")
+        remux_to_h264(court_raw_path, court_video_path)
 
     return frames_written
 
@@ -191,6 +273,7 @@ def run(
     n_teams: int = 2,
     ball_model_path: Path | None = None,
     ball_confidence: float = 0.25,
+    enable_lines: bool = False,
 ):
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -218,6 +301,7 @@ def run(
     print(f"Ball model:  {ball_model_path or 'COCO generic (use --ball-model for fine-tuned)'}")
     print(f"Court cal:   {calibration_path or 'none (set with --calibration)'}")
     print(f"Teams:       {n_teams}")
+    print(f"Lines POC:   {'ON' if enable_lines else 'OFF (use --lines to enable)'}")
     print(f"ffmpeg:      {'yes' if HAS_FFMPEG else 'no'}")
     print(f"Output:      {output_dir}")
     print()
@@ -247,6 +331,7 @@ def run(
         print("No court calibration — court positions will be unavailable.")
 
     state_path = output_dir / f"{output_stem}_states.jsonl"
+    court_video_path = output_dir / f"{output_stem}_court.mp4" if enable_lines or court_mapper.is_calibrated else None
     chunk_paths = []
     total_processed = 0
 
@@ -266,6 +351,11 @@ def run(
                 print(
                     f"\n--- Chunk {chunk_idx + 1}/{total_chunks}"
                     f" ({start_sec:.0f}s - {end_sec:.0f}s) ---"
+                )
+
+                chunk_court_path = (
+                    output_dir / f"{output_stem}_court_chunk{chunk_idx + 1:03d}.mp4"
+                    if court_video_path else None
                 )
 
                 written = process_chunk(
@@ -289,6 +379,8 @@ def run(
                     skip_pose=skip_pose,
                     ball_model=ball_model,
                     ball_confidence=ball_confidence,
+                    enable_lines=enable_lines,
+                    court_video_path=chunk_court_path,
                 )
 
                 total_processed += written
@@ -302,6 +394,8 @@ def run(
     print(f"\n{'=' * 60}")
     print(f"Done! {total_processed} frames in {total_chunks} chunk(s).")
     print(f"State data: {state_path}")
+    if court_video_path:
+        print(f"Court view: {output_dir}/{output_stem}_court_chunk*.mp4")
     print(f"Video chunks:")
     for p in chunk_paths:
         print(f"  {p}")
@@ -346,6 +440,10 @@ def main():
         "--ball-confidence", type=float, default=0.25,
         help="Ball detection confidence threshold (default: 0.25)",
     )
+    parser.add_argument(
+        "--lines", action="store_true",
+        help="Enable automatic line detection + court homography (POC)",
+    )
     args = parser.parse_args()
 
     if args.input:
@@ -379,6 +477,7 @@ def main():
         n_teams=args.n_teams,
         ball_model_path=ball_path,
         ball_confidence=args.ball_confidence,
+        enable_lines=args.lines,
     )
 
 
