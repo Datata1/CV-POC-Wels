@@ -1,0 +1,13 @@
+id,name,court_x_m,court_y_m,notes
+0,court_top_left,0,0,Far sideline × left baseline
+1,court_top_right,40,0,Far sideline × right baseline
+2,court_bottom_left,0,20,Near sideline × left baseline
+3,court_bottom_right,40,20,Near sideline × right baseline
+4,center_top,20,0,Center line × far sideline
+5,center_bottom,20,20,Center line × near sideline
+6,goal_area_top_left,0,7,Left 6m arc meets baseline (far)
+7,goal_area_bottom_left,0,13,Left 6m arc meets baseline (near)
+8,goal_area_top_right,40,7,Right 6m arc meets baseline (far)
+9,goal_area_bottom_right,40,13,Right 6m arc meets baseline (near)
+10,seven_m_left,7,10,Left 7-metre mark
+11,seven_m_right,33,10,Right 7-metre mark

@@ -1,4 +1,4 @@
-.PHONY: help install download-pose-model run preview clean analyze analyze-fast analyze-preview calibrate extract-frames train-ball validate-ball analyze-ball analyze-lines analyze-ball-lines extract-goal-frames train-goal validate-goal predict-goal install-goal train-court validate-court predict-court install-court analyze-goal
+.PHONY: help install download-pose-model run preview clean analyze analyze-fast analyze-preview calibrate extract-frames train-ball validate-ball analyze-ball analyze-lines analyze-ball-lines extract-goal-frames train-goal validate-goal predict-goal install-goal train-court-keypoints validate-court-keypoints predict-court-keypoints install-court-keypoints analyze-goal
 
 CHUNK_SECONDS ?= 60
 BALL_EPOCHS ?= 100
@@ -17,13 +17,13 @@ GOAL_DATA ?= annotation/goal/data.yaml
 GOAL_NAME ?= handball_goal
 GOAL_MODEL ?= runs/detect/$(GOAL_NAME)/weights/best.pt
 
-COURT_EPOCHS ?= 100
-COURT_IMGSZ ?= 640
-COURT_BATCH ?= 16
-COURT_BASE_MODEL ?= yolo11m-seg.pt
-COURT_DATA ?= annotation/court/data.yaml
-COURT_NAME ?= handball_court
-COURT_MODEL ?= runs/segment/$(COURT_NAME)/weights/best.pt
+COURT_KP_EPOCHS ?= 100
+COURT_KP_IMGSZ ?= 640
+COURT_KP_BATCH ?= 16
+COURT_KP_BASE_MODEL ?= yolo11m-pose.pt
+COURT_KP_DATA ?= annotation/court/data.yaml
+COURT_KP_NAME ?= handball_court_kp
+COURT_KP_MODEL ?= runs/pose/$(COURT_KP_NAME)/weights/best.pt
 
 help: ## Show available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -110,12 +110,21 @@ analyze-lines: ## Pipeline with automatic line detection + court top-down view
 analyze-ball-lines: ## Pipeline with ball model + line detection + court view
 	uv run python analyze.py --chunk-seconds $(CHUNK_SECONDS) --ball-model models/handball_ball.pt --confidence 0.10 --no-pose --lines
 
+# ── Homography POC (manual keypoints) ─────────────────────
+
+poc-homography: ## POC: Manual keypoint placement → homography (reads images from input/poc-homography/)
+	@mkdir -p input/poc-homography
+	@echo "Place frame images in input/poc-homography/ then run this target."
+	@[ "$$(ls input/poc-homography/*.jpg input/poc-homography/*.png 2>/dev/null | wc -l)" -gt 0 ] || \
+		{ echo "No images found in input/poc-homography/"; exit 1; }
+	uv run python poc_homography.py
+
 # ── Goal training ─────────────────────────────────────────
 
 extract-goal-frames: ## Extract frames from input video for goal labeling
 	mkdir -p annotation/goal/raw_images
 	ffmpeg -i $$(ls input/*.mp4 input/*.avi input/*.mov 2>/dev/null | head -1) \
-		-vf "select=not(mod(n\,300))" -vsync vfr annotation/goal/raw_images/frame_%05d.jpg
+		-vf "select=not(mod(n\,200))" -vsync vfr annotation/goal/raw_images/frame_%05d.jpg
 	@echo "Frames extracted to annotation/goal/raw_images/"
 	@echo "Upload to Roboflow, label as 'goal', export as YOLOv8 format into annotation/goal/"
 
@@ -149,39 +158,40 @@ install-goal: ## Copy trained goal model to models/ for use in pipeline
 	@echo "Installed to models/handball_goal.pt"
 	@echo "Run: make analyze-goal"
 
-analyze-goal: ## Full pipeline with goal model + court mapping
-	uv run python analyze.py --chunk-seconds $(CHUNK_SECONDS) --goal-model models/handball_goal.pt --court-model models/handball_court.pt --lines
+analyze-goal: ## Full pipeline with goal model + court keypoint mapping
+	uv run python analyze.py --chunk-seconds $(CHUNK_SECONDS) --goal-model models/handball_goal.pt --court-kp-model models/handball_court_kp.pt --lines
 
-# ── Court segmentation training ───────────────────────────
+# ── Court keypoint pose training ──────────────────────────
 
-train-court: ## Train court segmentation model (YOLO11-seg on polygon annotations)
-	uv run yolo segment train \
-		data=$(COURT_DATA) \
-		model=$(COURT_BASE_MODEL) \
-		epochs=$(COURT_EPOCHS) \
-		imgsz=$(COURT_IMGSZ) \
-		batch=$(COURT_BATCH) \
+train-court-keypoints: ## Train court keypoint pose model (YOLO11m-pose on landmark annotations)
+	uv run yolo pose train \
+		data=$(COURT_KP_DATA) \
+		model=$(COURT_KP_BASE_MODEL) \
+		epochs=$(COURT_KP_EPOCHS) \
+		imgsz=$(COURT_KP_IMGSZ) \
+		batch=$(COURT_KP_BATCH) \
 		device=0 \
-		name=$(COURT_NAME)
-	@echo "Training complete. Best model: $(COURT_MODEL)"
+		name=$(COURT_KP_NAME)
+	@echo "Training complete. Best model: $(COURT_KP_MODEL)"
 
-validate-court: ## Validate trained court segmentation model
-	uv run yolo segment val \
-		data=$(COURT_DATA) \
-		model=$(COURT_MODEL) \
+validate-court-keypoints: ## Validate trained court keypoint model
+	uv run yolo pose val \
+		data=$(COURT_KP_DATA) \
+		model=$(COURT_KP_MODEL) \
 		device=0
 
-predict-court: ## Run visual predictions with court segmentation model
-	uv run yolo segment predict \
-		model=$(COURT_MODEL) \
+predict-court-keypoints: ## Run visual predictions with court keypoint model
+	uv run yolo pose predict \
+		model=$(COURT_KP_MODEL) \
 		source=annotation/court/test/images \
 		device=0 \
 		save=True
-	@echo "Check runs/segment/predict/ for visual results"
+	@echo "Check runs/pose/predict/ for visual results"
 
-install-court: ## Copy trained court model to models/ for use in pipeline
-	cp $(COURT_MODEL) models/handball_court.pt
-	@echo "Installed to models/handball_court.pt"
+install-court-keypoints: ## Copy trained court keypoint model to models/
+	cp $(COURT_KP_MODEL) models/handball_court_kp.pt
+	@echo "Installed to models/handball_court_kp.pt"
+	@echo "Run: make analyze-goal"
 
 # ── Video download ────────────────────────────────────────
 
