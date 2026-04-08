@@ -1,13 +1,31 @@
 id,name,court_x_m,court_y_m,notes
-0,court_top_left,0,0,Far sideline × left baseline
-1,court_top_right,40,0,Far sideline × right baseline
-2,court_bottom_left,0,20,Near sideline × left baseline
-3,court_bottom_right,40,20,Near sideline × right baseline
-4,center_top,20,0,Center line × far sideline
-5,center_bottom,20,20,Center line × near sideline
-6,goal_area_top_left,0,7,Left 6m arc meets baseline (far)
-7,goal_area_bottom_left,0,13,Left 6m arc meets baseline (near)
-8,goal_area_top_right,40,7,Right 6m arc meets baseline (far)
-9,goal_area_bottom_right,40,13,Right 6m arc meets baseline (near)
-10,seven_m_left,7,10,Left 7-metre mark
-11,seven_m_right,33,10,Right 7-metre mark
+0,4m_L,4,10,Left goalkeeper restraining line
+1,4m_R,36,10,Right goalkeeper restraining line
+2,6m_base_L_B,0,17.5,Left 6m arc meets baseline (near)
+3,6m_base_L_T,0,2.5,Left 6m arc meets baseline (far)
+4,6m_base_R_B,40,17.5,Right 6m arc meets baseline (near)
+5,6m_base_R_T,40,2.5,Right 6m arc meets baseline (far)
+6,6m_vertex_L_B,6,11.5,Left 6m arc-straight junction (near)
+7,6m_vertex_L_T,6,8.5,Left 6m arc-straight junction (far)
+8,6m_vertex_R_B,34,11.5,Right 6m arc-straight junction (near)
+9,6m_vertex_R_T,34,8.5,Right 6m arc-straight junction (far)
+10,7m_L,7,10,Left 7-metre mark
+11,7m_R,33,10,Right 7-metre mark
+12,9m_base_L_B,2.96,20,Left 9m arc meets near sideline
+13,9m_base_L_T,2.96,0,Left 9m arc meets far sideline
+14,9m_base_R_B,37.04,20,Right 9m arc meets near sideline
+15,9m_base_R_T,37.04,0,Right 9m arc meets far sideline
+16,9m_vertex_L_B,9,11.5,Left 9m arc-straight junction (near)
+17,9m_vertex_L_T,9,8.5,Left 9m arc-straight junction (far)
+18,9m_vertex_R_B,31,11.5,Right 9m arc-straight junction (near)
+19,9m_vertex_R_T,31,8.5,Right 9m arc-straight junction (far)
+20,center_B,20,20,Center line × near sideline
+21,center_T,20,0,Center line × far sideline
+22,center_spot,20,10,Center spot
+23,court_BL,0,20,Near sideline × left baseline
+24,court_TL,0,0,Far sideline × left baseline
+25,court_TR,40,0,Far sideline × right baseline
+26,goalpost_L_B,0,11.5,Left goal near post
+27,goalpost_L_T,0,8.5,Left goal far post
+28,goalpost_R_B,40,11.5,Right goal near post
+29,goalpost_R_T,40,8.5,Right goal far post

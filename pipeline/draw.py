@@ -92,3 +92,41 @@ def draw_hud(frame: np.ndarray, state: dict):
     for line in lines:
         cv2.putText(frame, line, (10, y), FONT, 0.5, (255, 255, 255), 1)
         y += 20
+
+
+# Keypoint visualisation colors
+KP_DOT_COLOR = (0, 255, 0)       # green
+KP_LABEL_COLOR = (0, 255, 0)
+KP_DOT_RADIUS = 5
+
+
+def draw_keypoints(
+    frame: np.ndarray,
+    src_pts: np.ndarray,
+    names: list[str],
+):
+    """Draw detected court keypoints as labeled dots on the frame."""
+    for (px, py), name in zip(src_pts, names):
+        x, y = int(px), int(py)
+        cv2.circle(frame, (x, y), KP_DOT_RADIUS, KP_DOT_COLOR, -1)
+        cv2.circle(frame, (x, y), KP_DOT_RADIUS, (255, 255, 255), 1)
+        cv2.putText(frame, name, (x + 8, y - 4), FONT, 0.35, KP_LABEL_COLOR, 1)
+
+
+def overlay_court(frame: np.ndarray, court_img: np.ndarray, scale: float = 0.55):
+    """Overlay the court top-down view at the bottom-center of the frame."""
+    h, w = frame.shape[:2]
+    ch, cw = court_img.shape[:2]
+    new_w = int(cw * scale)
+    new_h = int(ch * scale)
+    resized = cv2.resize(court_img, (new_w, new_h))
+
+    # Position: bottom-center with small margin
+    margin = 10
+    y1 = h - new_h - margin
+    x1 = (w - new_w) // 2
+
+    # Semi-transparent background
+    roi = frame[y1:y1 + new_h, x1:x1 + new_w]
+    blended = cv2.addWeighted(roi, 0.3, resized, 0.7, 0)
+    frame[y1:y1 + new_h, x1:x1 + new_w] = blended

@@ -17,13 +17,13 @@ GOAL_DATA ?= annotation/goal/data.yaml
 GOAL_NAME ?= handball_goal
 GOAL_MODEL ?= runs/detect/$(GOAL_NAME)/weights/best.pt
 
-COURT_KP_EPOCHS ?= 100
-COURT_KP_IMGSZ ?= 640
-COURT_KP_BATCH ?= 16
-COURT_KP_BASE_MODEL ?= yolo11m-pose.pt
+COURT_KP_EPOCHS ?= 200
+COURT_KP_IMGSZ ?= 1920
+COURT_KP_BATCH ?= 2
+COURT_KP_BASE_MODEL ?= yolo11m.pt
 COURT_KP_DATA ?= annotation/court/data.yaml
 COURT_KP_NAME ?= handball_court_kp
-COURT_KP_MODEL ?= runs/pose/$(COURT_KP_NAME)/weights/best.pt
+COURT_KP_MODEL ?= runs/detect/$(COURT_KP_NAME)/weights/best.pt
 
 help: ## Show available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -65,7 +65,7 @@ calibrate: ## Open calibration tool to mark court corners
 extract-frames: ## Extract every 10th frame from input video for labeling
 	mkdir -p annotation/ball/raw_images
 	ffmpeg -i $$(ls input/*.mp4 input/*.avi input/*.mov 2>/dev/null | head -1) \
-		-vf "select=not(mod(n\,150))" -vsync vfr annotation/ball/raw_images/frame_%05d.jpg
+		-vf "select=not(mod(n\,800))" -vsync vfr annotation/ball/raw_images/frame_%05d.jpg
 	@echo "Frames extracted to annotation/ball/raw_images/"
 	@echo "Upload to Roboflow, label, export as YOLOv8 format into annotation/ball/"
 
@@ -158,13 +158,13 @@ install-goal: ## Copy trained goal model to models/ for use in pipeline
 	@echo "Installed to models/handball_goal.pt"
 	@echo "Run: make analyze-goal"
 
-analyze-goal: ## Full pipeline with goal model + court keypoint mapping
-	uv run python analyze.py --chunk-seconds $(CHUNK_SECONDS) --goal-model models/handball_goal.pt --court-kp-model models/handball_court_kp.pt --lines
+analyze-goal: ## Full pipeline with court keypoint mapping
+	uv run python analyze.py --chunk-seconds $(CHUNK_SECONDS) --court-kp-model models/handball_court_kp.pt --no-pose --yolo-model yolo11m.pt
 
 # ── Court keypoint pose training ──────────────────────────
 
-train-court-keypoints: ## Train court keypoint pose model (YOLO11m-pose on landmark annotations)
-	uv run yolo pose train \
+train-court-keypoints: ## Train court keypoint detection model (each landmark = its own class)
+	uv run yolo detect train \
 		data=$(COURT_KP_DATA) \
 		model=$(COURT_KP_BASE_MODEL) \
 		epochs=$(COURT_KP_EPOCHS) \
@@ -175,18 +175,18 @@ train-court-keypoints: ## Train court keypoint pose model (YOLO11m-pose on landm
 	@echo "Training complete. Best model: $(COURT_KP_MODEL)"
 
 validate-court-keypoints: ## Validate trained court keypoint model
-	uv run yolo pose val \
+	uv run yolo detect val \
 		data=$(COURT_KP_DATA) \
 		model=$(COURT_KP_MODEL) \
 		device=0
 
 predict-court-keypoints: ## Run visual predictions with court keypoint model
-	uv run yolo pose predict \
+	uv run yolo detect predict \
 		model=$(COURT_KP_MODEL) \
 		source=annotation/court/test/images \
 		device=0 \
 		save=True
-	@echo "Check runs/pose/predict/ for visual results"
+	@echo "Check runs/detect/predict/ for visual results"
 
 install-court-keypoints: ## Copy trained court keypoint model to models/
 	cp $(COURT_KP_MODEL) models/handball_court_kp.pt

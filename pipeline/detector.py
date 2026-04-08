@@ -38,6 +38,7 @@ def detect_and_track(
     max_persons: int = 20,
     ball_model: YOLO | None = None,
     ball_confidence: float = 0.25,
+    imgsz: int = 1280,
 ) -> tuple[list[dict], list[dict]]:
     """
     Detect persons and sports balls using YOLO's built-in ByteTrack tracker.
@@ -57,6 +58,7 @@ def detect_and_track(
             frame,
             classes=[PERSON_CLASS],
             conf=confidence,
+            imgsz=imgsz,
             persist=True,
             tracker="bytetrack.yaml",
             verbose=False,
@@ -64,6 +66,7 @@ def detect_and_track(
         ball_results = ball_model.track(
             frame,
             conf=ball_confidence,
+            imgsz=imgsz,
             persist=True,
             tracker="bytetrack.yaml",
             verbose=False,
@@ -76,6 +79,7 @@ def detect_and_track(
             frame,
             classes=[PERSON_CLASS, SPORTS_BALL_CLASS],
             conf=confidence,
+            imgsz=imgsz,
             persist=True,
             tracker="bytetrack.yaml",
             verbose=False,

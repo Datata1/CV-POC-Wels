@@ -338,7 +338,7 @@ class HomographyTracker:
         H_smooth = tracker.update(frame, raw_H_or_None)
     """
 
-    def __init__(self, ema_alpha: float = 0.3, max_stale_frames: int = 150):
+    def __init__(self, ema_alpha: float = 0.15, max_stale_frames: int = 150):
         self._H: np.ndarray | None = None
         self._prev_gray: np.ndarray | None = None
         self._ema_alpha = ema_alpha

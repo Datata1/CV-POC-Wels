@@ -27,9 +27,9 @@ from ultralytics import YOLO
 from pipeline.detector import detect_and_track
 from pipeline.team import TeamClassifier
 from pipeline.pose import create_pose_model, estimate_poses_batch
-from pipeline.court import CourtMapper
+from pipeline.court import CourtMapper, KeypointDetector
 from pipeline.state import build_frame_state, StateExporter
-from pipeline.draw import draw_player, draw_ball, draw_hud
+from pipeline.draw import draw_player, draw_ball, draw_hud, draw_keypoints, overlay_court
 from pipeline.lines import estimate_homography, HomographyTracker
 from pipeline.court_viz import render_court, CANVAS_W, CANVAS_H
 
@@ -88,6 +88,7 @@ def process_chunk(
     ball_confidence: float = 0.25,
     enable_lines: bool = False,
     court_video_path: Path | None = None,
+    court_kp_detector: KeypointDetector | None = None,
 ) -> int:
     cap = cv2.VideoCapture(str(video_path))
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
@@ -140,8 +141,15 @@ def process_chunk(
             # 2. Team classification
             persons = team_clf.classify(frame, persons)
 
-            # 2b. Court homography (if enabled and no manual calibration)
-            if enable_lines and not court_mapper.is_calibrated:
+            # 2b. Court homography (keypoint detector takes priority over lines)
+            detected_kp_src = None
+            detected_kp_names = None
+            if court_kp_detector is not None and not court_mapper.is_calibrated:
+                raw_H, debug = court_kp_detector.estimate_homography(frame)
+                detected_kp_src = np.float32(debug["src_pts"]) if debug["src_pts"] else None
+                detected_kp_names = debug["names"]
+                h_tracker.update(frame, raw_H)
+            elif enable_lines and not court_mapper.is_calibrated:
                 raw_H, _ = estimate_homography(frame)
                 h_tracker.update(frame, raw_H)
 
@@ -204,21 +212,28 @@ def process_chunk(
 
             state_exporter.write(state)
 
-            # 5b. Render court top-down view
-            if court_out is not None:
+            # 6. Draw annotations
+            for p in persons:
+                draw_player(frame, p)
+            for b in balls:
+                draw_ball(frame, b)
+
+            # 6b. Draw detected court keypoints
+            if detected_kp_src is not None and detected_kp_names:
+                draw_keypoints(frame, detected_kp_src, detected_kp_names)
+
+            # 6c. Overlay court top-down view (picture-in-picture)
+            if court_out is not None or active_H is not None:
                 court_frame = render_court(
                     players=state["players"],
                     ball=state.get("ball"),
                     frame_id=abs_frame,
                     timestamp_s=timestamp,
                 )
-                court_out.write(court_frame)
+                overlay_court(frame, court_frame)
+                if court_out is not None:
+                    court_out.write(court_frame)
 
-            # 6. Draw annotations
-            for p in persons:
-                draw_player(frame, p)
-            for b in balls:
-                draw_ball(frame, b)
             draw_hud(frame, state)
 
             out.write(frame)
@@ -271,6 +286,7 @@ def run(
     ball_model_path: Path | None = None,
     ball_confidence: float = 0.25,
     enable_lines: bool = False,
+    court_kp_model_path: Path | None = None,
 ):
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -297,6 +313,7 @@ def run(
     print(f"Pose:        {'OFF' if skip_pose else pose_model_size + ' (GPU)'}")
     print(f"Ball model:  {ball_model_path or 'COCO generic (use --ball-model for fine-tuned)'}")
     print(f"Court cal:   {calibration_path or 'none (set with --calibration)'}")
+    print(f"Court KP:    {court_kp_model_path or 'none (use --court-kp-model)'}")
     print(f"Teams:       {n_teams}")
     print(f"Lines POC:   {'ON' if enable_lines else 'OFF (use --lines to enable)'}")
     print(f"ffmpeg:      {'yes' if HAS_FFMPEG else 'no'}")
@@ -322,13 +339,20 @@ def run(
     team_clf = TeamClassifier(n_teams=n_teams)
     court_mapper = CourtMapper(calibration_path)
 
+    court_kp_detector = None
+    if court_kp_model_path and court_kp_model_path.exists():
+        print(f"Loading court keypoint model: {court_kp_model_path.name}")
+        court_kp_detector = KeypointDetector(court_kp_model_path)
+    elif court_kp_model_path:
+        print(f"Warning: Court keypoint model not found at '{court_kp_model_path}'.")
+
     if court_mapper.is_calibrated:
         print("Court calibration loaded.")
     else:
         print("No court calibration — court positions will be unavailable.")
 
     state_path = output_dir / f"{output_stem}_states.jsonl"
-    court_video_path = output_dir / f"{output_stem}_court.mp4" if enable_lines or court_mapper.is_calibrated else None
+    court_video_path = output_dir / f"{output_stem}_court.mp4" if (enable_lines or court_mapper.is_calibrated or court_kp_detector) else None
     chunk_paths = []
     total_processed = 0
 
@@ -378,6 +402,7 @@ def run(
                     ball_confidence=ball_confidence,
                     enable_lines=enable_lines,
                     court_video_path=chunk_court_path,
+                    court_kp_detector=court_kp_detector,
                 )
 
                 total_processed += written
@@ -441,6 +466,10 @@ def main():
         "--lines", action="store_true",
         help="Enable automatic line detection + court homography (POC)",
     )
+    parser.add_argument(
+        "--court-kp-model", type=str, default=None,
+        help="Path to court keypoint detection model (e.g. models/handball_court_kp.pt)",
+    )
     args = parser.parse_args()
 
     if args.input:
@@ -458,6 +487,7 @@ def main():
 
     cal_path = Path(args.calibration) if args.calibration else None
     ball_path = Path(args.ball_model) if args.ball_model else None
+    court_kp_path = Path(args.court_kp_model) if args.court_kp_model else None
 
     run(
         video_path=video_path,
@@ -475,6 +505,7 @@ def main():
         ball_model_path=ball_path,
         ball_confidence=args.ball_confidence,
         enable_lines=args.lines,
+        court_kp_model_path=court_kp_path,
     )
 
 
