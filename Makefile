@@ -1,4 +1,4 @@
-.PHONY: help install download-pose-model run preview clean analyze analyze-fast analyze-preview calibrate extract-frames train-ball validate-ball analyze-ball analyze-lines analyze-ball-lines extract-goal-frames train-goal validate-goal predict-goal install-goal train-court-keypoints validate-court-keypoints predict-court-keypoints install-court-keypoints analyze-goal
+.PHONY: help install download-pose-model run preview clean analyze analyze-fast analyze-preview calibrate extract-frames train-ball validate-ball analyze-ball analyze-lines analyze-ball-lines extract-goal-frames train-goal validate-goal predict-goal install-goal train-court-keypoints validate-court-keypoints predict-court-keypoints install-court-keypoints analyze-goal setup-rtdetr convert-datasets train-rtdetr-ball train-rtdetr-court-kp train-rtdetr-goal validate-rtdetr-ball validate-rtdetr-court-kp validate-rtdetr-goal
 
 CHUNK_SECONDS ?= 60
 BALL_EPOCHS ?= 100
@@ -65,7 +65,7 @@ calibrate: ## Open calibration tool to mark court corners
 extract-frames: ## Extract every 10th frame from input video for labeling
 	mkdir -p annotation/ball/raw_images
 	ffmpeg -i $$(ls input/*.mp4 input/*.avi input/*.mov 2>/dev/null | head -1) \
-		-vf "select=not(mod(n\,800))" -vsync vfr annotation/ball/raw_images/frame_%05d.jpg
+		-vf "select=not(mod(n\,30))" -vsync vfr -q:v 1 annotation/ball/raw_images/frame_%05d.jpg
 	@echo "Frames extracted to annotation/ball/raw_images/"
 	@echo "Upload to Roboflow, label, export as YOLOv8 format into annotation/ball/"
 
@@ -124,7 +124,7 @@ poc-homography: ## POC: Manual keypoint placement → homography (reads images f
 extract-goal-frames: ## Extract frames from input video for goal labeling
 	mkdir -p annotation/goal/raw_images
 	ffmpeg -i $$(ls input/*.mp4 input/*.avi input/*.mov 2>/dev/null | head -1) \
-		-vf "select=not(mod(n\,200))" -vsync vfr annotation/goal/raw_images/frame_%05d.jpg
+		-vf "select=not(mod(n\,100))" -vsync vfr -q:v 1 annotation/goal/raw_images/frame_%05d.jpg
 	@echo "Frames extracted to annotation/goal/raw_images/"
 	@echo "Upload to Roboflow, label as 'goal', export as YOLOv8 format into annotation/goal/"
 
@@ -234,6 +234,79 @@ train-tracknet: ## Fine-tune TrackNet on handball triplets (warm-start from mode
 
 download-video: ## Download sample handball video for testing
 	mkdir -p input
+<<<<<<< HEAD
 	yt-dlp -S "vcodec:h264" --merge-output-format mp4 -o "input/video2.%(ext)s" "https://www.youtube.com/watch?v=5PDVclN7lY0"
+=======
+	yt-dlp -S "vcodec:h264" --merge-output-format mp4 --cookies-from-browser chrome -o "input/video2.%(ext)s" "https://www.youtube.com/watch?v=5PDVclN7lY0"
+
+# ── RT-DETRv4 POC ─────────────────────────────────────────
+
+RTDETR_DIR = local/rtdetrv4
+RTDETR_PRETRAIN = $(RTDETR_DIR)/pretrain/rtv4_hgnetv2_l_coco.pth
+DINOV3_WEIGHTS = $(RTDETR_DIR)/pretrain/dinov3_vitb16_pretrain_lvd1689m.pth
+
+setup-rtdetr: ## Download RT-DETRv4 pretrained weights + DINOv3 teacher
+	mkdir -p $(RTDETR_DIR)/pretrain
+	@echo "=== Step 1: RT-DETRv4-L COCO weights (Google Drive) ==="
+	@[ -f $(RTDETR_PRETRAIN) ] || \
+		(uv pip install gdown && \
+		 uv run gdown --id 1shO9EzZvXZyKedE2urLsN4dwEv8Jqa_8 -O $(RTDETR_PRETRAIN))
+	@echo "=== Step 2: Cloning DINOv3 repo ==="
+	@[ -d $(RTDETR_DIR)/dinov3 ] || \
+		git clone https://github.com/facebookresearch/dinov3.git $(RTDETR_DIR)/dinov3
+	@echo "=== Step 3: DINOv3 ViT-B/16 weights ==="
+	@[ -f $(DINOV3_WEIGHTS) ] || \
+		echo "MANUAL STEP: Request DINOv3 weights at https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/" && \
+		echo "Download ViT-B/16 (LVD-1689M) and save to: $(DINOV3_WEIGHTS)"
+	@echo "=== RT-DETRv4 setup complete ==="
+
+convert-datasets: ## Convert YOLO datasets to COCO-JSON for RT-DETRv4
+	uv run python scripts/yolo_to_coco.py --data annotation/ball/data.yaml --output annotation/ball/coco
+	uv run python scripts/yolo_to_coco.py --data annotation/court/data.yaml --output annotation/court/coco
+	uv run python scripts/yolo_to_coco.py --data annotation/goal/data.yaml --output annotation/goal/coco
+
+train-rtdetr-ball: ## Train RT-DETRv4 ball detection (fine-tune from COCO)
+	cd $(RTDETR_DIR) && \
+	uv run torchrun --nproc_per_node=1 train.py \
+		-c configs/handball/rtv4_ball.yml \
+		-t pretrain/rtv4_hgnetv2_l_coco.pth \
+		--use-amp --seed=42
+
+train-rtdetr-court-kp: ## Train RT-DETRv4 court keypoint detection
+	cd $(RTDETR_DIR) && \
+	uv run torchrun --nproc_per_node=1 train.py \
+		-c configs/handball/rtv4_court_kp.yml \
+		-t pretrain/rtv4_hgnetv2_l_coco.pth \
+		--use-amp --seed=42
+
+train-rtdetr-goal: ## Train RT-DETRv4 goal detection
+	cd $(RTDETR_DIR) && \
+	uv run torchrun --nproc_per_node=1 train.py \
+		-c configs/handball/rtv4_goal.yml \
+		-t pretrain/rtv4_hgnetv2_l_coco.pth \
+		--use-amp --seed=42
+
+validate-rtdetr-ball: ## Validate RT-DETRv4 ball model
+	cd $(RTDETR_DIR) && \
+	uv run torchrun --nproc_per_node=1 train.py \
+		-c configs/handball/rtv4_ball.yml \
+		-r outputs/rtv4_handball_ball/best_stg1.pth \
+		--test-only
+
+validate-rtdetr-court-kp: ## Validate RT-DETRv4 court keypoint model
+	cd $(RTDETR_DIR) && \
+	uv run torchrun --nproc_per_node=1 train.py \
+		-c configs/handball/rtv4_court_kp.yml \
+		-r outputs/rtv4_handball_court_kp/best_stg1.pth \
+		--test-only
+
+validate-rtdetr-goal: ## Validate RT-DETRv4 goal model
+	cd $(RTDETR_DIR) && \
+	uv run torchrun --nproc_per_node=1 train.py \
+		-c configs/handball/rtv4_goal.yml \
+		-r outputs/rtv4_handball_goal/best_stg1.pth \
+		--test-only
+
+>>>>>>> 676be77 (more documentation)
 clean: ## Remove all generated output videos and state files
 	rm -f output/*.mp4 output/*.jsonl
