@@ -216,6 +216,20 @@ tracknet-detect-heatmaps: ## TrackNet detection + emit side-by-side heatmap vide
 tracknet-detect-preview: ## TrackNet detection with live preview window
 	uv run python tracknet_detect.py --chunk-seconds $(CHUNK_SECONDS) --model $(TRACKNET_MODEL) --preview
 
+extract-tracknet-triplets: ## Extract (t-2, t-1, t) triplets from first input/ video for TrackNet labelling
+	uv run python training/extract_tracknet_triplets.py \
+		--input $$(ls input/*.mp4 input/*.avi input/*.mov 2>/dev/null | head -1) \
+		--out annotation/ball/triplets --stride 30
+	@echo "Upload only *_t.jpg files to Roboflow, label the ball, export YOLOv8 labels to annotation/ball/labels/"
+
+train-tracknet: ## Fine-tune TrackNet on handball triplets (warm-start from models/tracknet.pt)
+	uv run python training/train_tracknet.py \
+		--triplets annotation/ball/triplets \
+		--labels   annotation/ball/labels \
+		--pretrained models/tracknet.pt \
+		--output     models/tracknet_handball.pt \
+		--epochs 30 --batch-size 4
+
 # ── Video download ────────────────────────────────────────
 
 download-video: ## Download sample handball video for testing

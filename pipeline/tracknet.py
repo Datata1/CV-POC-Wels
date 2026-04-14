@@ -73,7 +73,8 @@ class BallTrackerNet(nn.Module):
         self.conv18 = ConvBlock(64, out_channels)
         self.softmax = nn.Softmax(dim=1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward_logits(self, x: torch.Tensor) -> torch.Tensor:
+        """Return raw per-pixel class logits, shape (B, 256, H*W). Used for training."""
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.pool1(x)
@@ -98,9 +99,10 @@ class BallTrackerNet(nn.Module):
         x = self.conv16(x)
         x = self.conv17(x)
         x = self.conv18(x)
-        out = x.reshape(x.shape[0], self.out_channels, -1)
-        out = self.softmax(out)
-        return out
+        return x.reshape(x.shape[0], self.out_channels, -1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.softmax(self.forward_logits(x))
 
 
 class TrackNetDetector:
