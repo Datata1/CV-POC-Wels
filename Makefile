@@ -234,9 +234,6 @@ train-tracknet: ## Fine-tune TrackNet on handball triplets (warm-start from mode
 
 download-video: ## Download sample handball video for testing
 	mkdir -p input
-<<<<<<< HEAD
-	yt-dlp -S "vcodec:h264" --merge-output-format mp4 -o "input/video2.%(ext)s" "https://www.youtube.com/watch?v=5PDVclN7lY0"
-=======
 	yt-dlp -S "vcodec:h264" --merge-output-format mp4 --cookies-from-browser chrome -o "input/video2.%(ext)s" "https://www.youtube.com/watch?v=5PDVclN7lY0"
 
 # ── RT-DETRv4 POC ─────────────────────────────────────────
@@ -307,6 +304,5 @@ validate-rtdetr-goal: ## Validate RT-DETRv4 goal model
 		-r outputs/rtv4_handball_goal/best_stg1.pth \
 		--test-only
 
->>>>>>> 676be77 (more documentation)
 clean: ## Remove all generated output videos and state files
 	rm -f output/*.mp4 output/*.jsonl
