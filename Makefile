@@ -193,11 +193,33 @@ install-court-keypoints: ## Copy trained court keypoint model to models/
 	@echo "Installed to models/handball_court_kp.pt"
 	@echo "Run: make analyze-goal"
 
+# ── TrackNet ball detection (POC) ─────────────────────────
+
+TRACKNET_MODEL ?= models/tracknet.pt
+
+download-tracknet-model: ## Show instructions for downloading pretrained TrackNet weights
+	@echo "The yastrebksv/TrackNet repo distributes weights via Google Drive, not a direct URL."
+	@echo ""
+	@echo "1. Open the README at https://github.com/yastrebksv/TrackNet"
+	@echo "2. Click the 'model_best.pt' Google Drive link in the 'Pretrained model' section"
+	@echo "3. Save the file to: $(TRACKNET_MODEL)"
+	@echo ""
+	@echo "Or, if you have gdown installed and know the file ID:"
+	@echo "    mkdir -p models && uv run gdown <FILE_ID> -O $(TRACKNET_MODEL)"
+
+tracknet-detect: ## Run TrackNet ball detection on first video in input/
+	uv run python tracknet_detect.py --chunk-seconds $(CHUNK_SECONDS) --model $(TRACKNET_MODEL)
+
+tracknet-detect-heatmaps: ## TrackNet detection + emit side-by-side heatmap video
+	uv run python tracknet_detect.py --chunk-seconds $(CHUNK_SECONDS) --model $(TRACKNET_MODEL) --save-heatmaps
+
+tracknet-detect-preview: ## TrackNet detection with live preview window
+	uv run python tracknet_detect.py --chunk-seconds $(CHUNK_SECONDS) --model $(TRACKNET_MODEL) --preview
+
 # ── Video download ────────────────────────────────────────
 
 download-video: ## Download sample handball video for testing
 	mkdir -p input
-	yt-dlp -S "vcodec:h264" --merge-output-format mp4 --cookies-from-browser chrome -o "input/video2.%(ext)s" "https://www.youtube.com/watch?v=5PDVclN7lY0"
-
+	yt-dlp -S "vcodec:h264" --merge-output-format mp4 -o "input/video2.%(ext)s" "https://www.youtube.com/watch?v=5PDVclN7lY0"
 clean: ## Remove all generated output videos and state files
 	rm -f output/*.mp4 output/*.jsonl
